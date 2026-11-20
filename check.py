@@ -15,12 +15,19 @@ from pathlib import Path
 # ------------------------------------------------------------------
 # 1. 확인할 게시판 목록 (주소를 추가하려면 아래 형식으로 한 줄 더 적으면 됩니다)
 # ------------------------------------------------------------------
+# 문화포털은 전국 공고가 모두 올라오므로, 공연·음악·예술인 관련 글만 보도록 더 좁은 키워드를 씁니다.
+PORTAL_INCLUDE = [
+    "공연", "음악", "성악", "클래식", "중창", "합창", "예술인", "예술단체", "창작", "울산",
+]
+
 SOURCES = [
-    {"name": "울산문화관광재단 공모 및 입찰", "url": "https://uctf.or.kr/board/bid?page=0"},
+    # use_rows: 표의 한 줄 전체를 글 하나로 읽는 방식 / debug: 테스트 때 화면 글자를 보고용으로 보냄
+    {"name": "울산문화관광재단 공모 및 입찰", "url": "https://uctf.or.kr/board/bid?page=0",
+     "use_rows": True, "debug": True},
     {"name": "울산문화24 공지사항", "url": "https://ulsanculture.kr/webuser/notice/list.html"},
     {"name": "울산문화예술회관 공지사항", "url": "https://www.ulsan.go.kr/ucac/art/page.do?mnu_code=mnu003001"},
-    {"name": "문화포털 문화지원사업", "url": "https://www.culture.go.kr/portal/cltBnf/cltSup/list.do?menuNo=200104"},
-    {"name": "문화포털 보조금지원사업", "url": "https://www.culture.go.kr/portal/cltBnf/rcrtInfo/userList.do?menuNo=200068"},
+    {"name": "문화포털 문화지원사업", "url": "https://www.culture.go.kr/portal/cltBnf/cltSup/list.do?menuNo=200104",
+     "include": PORTAL_INCLUDE},
 ]
 
 # ------------------------------------------------------------------
@@ -33,6 +40,7 @@ INCLUDE = [
 EXCLUDE = [
     "채용", "인턴", "관광기업", "기념품", "입찰", "결과 발표", "결과발표",
     "심의 결과", "심의결과", "단원", "대관",
+    "체육시설", "이용요금", "감면", "청렴", "학술대회", "도서전", "수기공모전", "문화누리카드", "문해",
 ]
 
 MAX_MESSAGES_PER_RUN = 10      # 한 번에 보낼 최대 알림 수
@@ -53,6 +61,7 @@ def clean_title(text):
     t = DATE_RE.sub(" ", text)
     t = STATUS_RE.sub(" ", t)
     t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"(\s\d+)+$", "", t).strip()
     return t
 
 
@@ -61,10 +70,10 @@ def display_title(text):
     return t if len(t) <= 120 else t[:117] + "..."
 
 
-def matches(title):
+def matches(title, include=None):
     if any(x in title for x in EXCLUDE):
         return False
-    return any(x in title for x in INCLUDE)
+    return any(x in title for x in (include or INCLUDE))
 
 
 def make_key(source_name, title):
@@ -104,8 +113,8 @@ def send_telegram(token, chat_id, text):
     return False
 
 
-def fetch_links(context, url):
-    """게시판을 브라우저로 열어서 (글자, 주소) 목록을 읽어 옵니다."""
+def fetch_links(context, url, use_rows=False):
+    """게시판을 브라우저로 열어서 (글자, 주소) 목록과 화면 글자를 읽어 옵니다."""
     page = context.new_page()
     try:
         try:
@@ -113,11 +122,24 @@ def fetch_links(context, url):
         except Exception:
             page.goto(url, wait_until="load", timeout=60000)
         page.wait_for_timeout(3000)
+        try:
+            page.wait_for_selector("table tbody tr td", timeout=15000)
+        except Exception:
+            pass
         raw = page.eval_on_selector_all(
             "a",
             "els => els.map(e => ({t: (e.innerText || e.textContent || '').trim(),"
             " h: e.getAttribute('href') || ''}))",
         )
+        rows = []
+        if use_rows:
+            rows = page.eval_on_selector_all(
+                "tr", "els => els.map(e => (e.innerText || '').trim())"
+            )
+        try:
+            body = page.inner_text("body")
+        except Exception:
+            body = ""
     finally:
         page.close()
     links = []
@@ -131,7 +153,11 @@ def fetch_links(context, url):
         else:
             link = urllib.parse.urljoin(url, href)
         links.append((text, link))
-    return links
+    for r in rows:
+        text = re.sub(r"\s+", " ", r).strip()
+        if 8 <= len(text) <= 300:
+            links.append((text, url))
+    return links, body
 
 
 def short_err(e):
@@ -156,6 +182,7 @@ def main():
     report = []   # 테스트 보고용
 
     details = []  # 테스트 보고용: (게시판 이름, 키워드에 맞는 글 제목들)
+    debug_msgs = []  # 테스트 보고용: (게시판 이름, 화면 글자 일부)
 
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -167,7 +194,7 @@ def main():
             links = None
             err1 = ""
             try:
-                links = fetch_links(context, url)
+                links, body = fetch_links(context, url, src.get("use_rows", False))
             except Exception as e:
                 err1 = short_err(e)
             if links is None:
@@ -176,7 +203,7 @@ def main():
                     if browser2 is None:
                         browser2 = p.chromium.launch(args=["--disable-http2"])
                         context2 = browser2.new_context(locale="ko-KR", user_agent=USER_AGENT)
-                    links = fetch_links(context2, url)
+                    links, body = fetch_links(context2, url, src.get("use_rows", False))
                 except Exception as e:
                     msg = f"{name}: 열지 못했습니다\n  1차: {err1}\n  2차: {short_err(e)}"
                     print(msg)
@@ -186,7 +213,7 @@ def main():
             matched = []
             keys_in_page = set()
             for text, link in links:
-                if not matches(text):
+                if not matches(text, src.get("include")):
                     continue
                 key = make_key(name, text)
                 if key in keys_in_page:
@@ -199,6 +226,10 @@ def main():
                 print("   -", t)
             report.append(f"{name}\n  링크 {len(links)}개 / 키워드에 맞는 글 {len(matched)}개")
             details.append((name, [t for t, _, _ in matched]))
+            if src.get("debug"):
+                pos = body.find("게시판 내 검색")
+                snippet = body[pos:pos + 1500] if pos >= 0 else body[-1500:]
+                debug_msgs.append((name, re.sub(r"\n\s*\n+", "\n", snippet)))
 
             if name not in state["init"]:
                 # 처음 확인하는 게시판: 지금 있는 글은 기억만 하고 알리지 않음
@@ -230,6 +261,8 @@ def main():
     if test_mode:
         body = "✅ 테스트 실행 결과\n(처음 실행이라 지금 올라온 글은 알리지 않고 기억만 합니다)\n\n" + "\n\n".join(report)
         send_telegram(token, chat_id, body[:3900])
+        for dname, snippet in debug_msgs:
+            send_telegram(token, chat_id, f"[{dname}] 화면 글자(확인용)\n{snippet}"[:3900])
         for dname, titles in details:
             lines = "\n".join(f"{i + 1}. {t[:70]}" for i, t in enumerate(titles[:25]))
             send_telegram(token, chat_id, f"[{dname}] 키워드에 맞는 글 목록\n{lines}"[:3900])
