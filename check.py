@@ -134,6 +134,12 @@ def fetch_links(context, url):
     return links
 
 
+def short_err(e):
+    lines = str(e).strip().splitlines()
+    first = lines[0] if lines else ""
+    return (first[:160] or type(e).__name__)
+
+
 def main():
     token = os.environ.get("TELEGRAM_TOKEN", "").strip()
     chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
@@ -149,18 +155,33 @@ def main():
     alerts = []   # (출처, 제목, 주소)
     report = []   # 테스트 보고용
 
+    details = []  # 테스트 보고용: (게시판 이름, 키워드에 맞는 글 제목들)
+
     with sync_playwright() as p:
         browser = p.chromium.launch()
         context = browser.new_context(locale="ko-KR", user_agent=USER_AGENT)
+        browser2 = None
+        context2 = None
         for src in SOURCES:
             name, url = src["name"], src["url"]
+            links = None
+            err1 = ""
             try:
                 links = fetch_links(context, url)
             except Exception as e:
-                msg = f"{name}: 열지 못했습니다 ({type(e).__name__})"
-                print(msg)
-                report.append(msg)
-                continue
+                err1 = short_err(e)
+            if links is None:
+                # 한 번 더: HTTP/2를 끄고 다시 시도
+                try:
+                    if browser2 is None:
+                        browser2 = p.chromium.launch(args=["--disable-http2"])
+                        context2 = browser2.new_context(locale="ko-KR", user_agent=USER_AGENT)
+                    links = fetch_links(context2, url)
+                except Exception as e:
+                    msg = f"{name}: 열지 못했습니다\n  1차: {err1}\n  2차: {short_err(e)}"
+                    print(msg)
+                    report.append(msg)
+                    continue
 
             matched = []
             keys_in_page = set()
@@ -174,12 +195,10 @@ def main():
                 matched.append((display_title(text), link, key))
 
             print(f"[{name}] 링크 {len(links)}개, 키워드에 맞는 글 {len(matched)}개")
-            for t, _, _ in matched[:15]:
+            for t, _, _ in matched[:30]:
                 print("   -", t)
-            report.append(
-                f"{name}\n  링크 {len(links)}개 / 키워드에 맞는 글 {len(matched)}개"
-                + "".join(f"\n  - {t[:60]}" for t, _, _ in matched[:3])
-            )
+            report.append(f"{name}\n  링크 {len(links)}개 / 키워드에 맞는 글 {len(matched)}개")
+            details.append((name, [t for t, _, _ in matched]))
 
             if name not in state["init"]:
                 # 처음 확인하는 게시판: 지금 있는 글은 기억만 하고 알리지 않음
@@ -194,6 +213,8 @@ def main():
                     seen.add(key)
                     alerts.append((name, title, link))
         browser.close()
+        if browser2 is not None:
+            browser2.close()
 
     # ---- 알림 보내기 ----
     sent = 0
@@ -209,6 +230,9 @@ def main():
     if test_mode:
         body = "✅ 테스트 실행 결과\n(처음 실행이라 지금 올라온 글은 알리지 않고 기억만 합니다)\n\n" + "\n\n".join(report)
         send_telegram(token, chat_id, body[:3900])
+        for dname, titles in details:
+            lines = "\n".join(f"{i + 1}. {t[:70]}" for i, t in enumerate(titles[:25]))
+            send_telegram(token, chat_id, f"[{dname}] 키워드에 맞는 글 목록\n{lines}"[:3900])
 
     # ---- 일주일에 한 번 '정상 작동 중' 알림 ----
     today = date.today().isoformat()
