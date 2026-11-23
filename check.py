@@ -19,6 +19,12 @@ from pathlib import Path
 PORTAL_INCLUDE = [
     "공연", "음악", "성악", "클래식", "중창", "합창", "예술인", "예술단체", "창작", "울산",
 ]
+# 문화포털은 전국 공고가 다 섞여 있어서, 아래 지역 이름이 하나도 없는 글(=울산/전국 아닌 지역 공고)은 제외합니다.
+OTHER_REGIONS = [
+    "서울", "부산", "대구", "인천", "광주", "대전", "세종",
+    "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
+    "천안", "청주", "전주", "포항", "창원", "수원", "성남", "고양", "용인",
+]
 
 SOURCES = [
     # use_rows: 표의 한 줄 전체를 글 하나로 읽는 방식 / debug: 테스트 때 화면 글자를 보고용으로 보냄
@@ -27,7 +33,7 @@ SOURCES = [
     {"name": "울산문화24 공지사항", "url": "https://ulsanculture.kr/webuser/notice/list.html"},
     {"name": "울산문화예술회관 공지사항", "url": "https://www.ulsan.go.kr/ucac/art/page.do?mnu_code=mnu003001"},
     {"name": "문화포털 문화지원사업", "url": "https://www.culture.go.kr/portal/cltBnf/cltSup/list.do?menuNo=200104",
-     "include": PORTAL_INCLUDE},
+     "include": PORTAL_INCLUDE, "region_filter": True},
 ]
 
 # ------------------------------------------------------------------
@@ -70,10 +76,20 @@ def display_title(text):
     return t if len(t) <= 120 else t[:117] + "..."
 
 
-def matches(title, include=None):
+def matches(title, include=None, region_filter=False):
     if any(x in title for x in EXCLUDE):
         return False
-    return any(x in title for x in (include or INCLUDE))
+    if not any(x in title for x in (include or INCLUDE)):
+        return False
+    if region_filter:
+        # '울산'이 있으면 통과. 없으면, 다른 지역 이름이 있는 글(천안/대구 등)만 걸러내고
+        # 지역 이름이 아예 없는 전국 공모는 통과시킵니다.
+        if "울산" in title:
+            return True
+        if any(r in title for r in OTHER_REGIONS):
+            return False
+        return True
+    return True
 
 
 def make_key(source_name, title):
@@ -213,7 +229,7 @@ def main():
             matched = []
             keys_in_page = set()
             for text, link in links:
-                if not matches(text, src.get("include")):
+                if not matches(text, src.get("include"), src.get("region_filter", False)):
                     continue
                 key = make_key(name, text)
                 if key in keys_in_page:
