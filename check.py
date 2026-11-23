@@ -20,6 +20,10 @@ PORTAL_INCLUDE = [
     "공연", "음악", "성악", "클래식", "중창", "합창", "예술인", "예술단체", "창작", "울산",
 ]
 # 문화포털은 전국 공고가 다 섞여 있어서, 아래 지역 이름이 하나도 없는 글(=울산/전국 아닌 지역 공고)은 제외합니다.
+# 재단 게시판은 관광·입찰 공고가 훨씬 많이 섞여 있어서, 문화예술 관련 말이 있는 글만 통과시킵니다.
+FOUNDATION_INCLUDE = [
+    "공연", "음악", "성악", "클래식", "중창", "합창", "예술", "창작", "출연", "문화",
+]
 OTHER_REGIONS = [
     "서울", "부산", "대구", "인천", "광주", "대전", "세종",
     "경기", "강원", "충북", "충남", "전북", "전남", "경북", "경남", "제주",
@@ -29,8 +33,9 @@ OTHER_REGIONS = [
 SOURCES = [
     # use_rows: 표의 한 줄 전체를 글 하나로 읽는 방식 / debug: 테스트 때 화면 글자를 보고용으로 보냄
     {"name": "울산문화관광재단 공모 및 입찰", "url": "https://uctf.or.kr/board/bid?page=0",
-     "use_rows": True, "debug": True},
-    {"name": "울산문화24 공지사항", "url": "https://ulsanculture.kr/webuser/notice/list.html"},
+     "use_rows": True, "require_date": True, "include": FOUNDATION_INCLUDE},
+    {"name": "울산문화24 공지사항", "url": "https://ulsanculture.kr/webuser/notice/list.html",
+     "require_date": True},
     {"name": "울산문화예술회관 공지사항", "url": "https://www.ulsan.go.kr/ucac/art/page.do?mnu_code=mnu003001"},
     {"name": "문화포털 문화지원사업", "url": "https://www.culture.go.kr/portal/cltBnf/cltSup/list.do?menuNo=200104",
      "include": PORTAL_INCLUDE, "region_filter": True},
@@ -45,8 +50,11 @@ INCLUDE = [
 ]
 EXCLUDE = [
     "채용", "인턴", "관광기업", "기념품", "입찰", "결과 발표", "결과발표",
-    "심의 결과", "심의결과", "단원", "대관",
+    "심의 결과", "심의결과", "단원", "대관", "결과",
     "체육시설", "이용요금", "감면", "청렴", "학술대회", "도서전", "수기공모전", "문화누리카드", "문해",
+    "합격자", "심의위원", "평가위원", "후보자", "안내원", "예술감독 공개모집",
+    "무장애", "마이스", "MICE", "시티투어", "자동차보험", "충전기", "용역", "팸투어", "공유오피스",
+    "대출", "융자",
 ]
 
 MAX_MESSAGES_PER_RUN = 10      # 한 번에 보낼 최대 알림 수
@@ -76,10 +84,12 @@ def display_title(text):
     return t if len(t) <= 120 else t[:117] + "..."
 
 
-def matches(title, include=None, region_filter=False):
+def matches(title, include=None, region_filter=False, require_date=False):
     if any(x in title for x in EXCLUDE):
         return False
     if not any(x in title for x in (include or INCLUDE)):
+        return False
+    if require_date and not DATE_RE.search(title):
         return False
     if region_filter:
         # '울산'이 있으면 통과. 없으면, 다른 지역 이름이 있는 글(천안/대구 등)만 걸러내고
@@ -229,7 +239,7 @@ def main():
             matched = []
             keys_in_page = set()
             for text, link in links:
-                if not matches(text, src.get("include"), src.get("region_filter", False)):
+                if not matches(text, src.get("include"), src.get("region_filter", False), src.get("require_date", False)):
                     continue
                 key = make_key(name, text)
                 if key in keys_in_page:
